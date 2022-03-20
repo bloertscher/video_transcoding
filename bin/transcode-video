@@ -9,6 +9,7 @@ $LOAD_PATH.unshift File.expand_path(File.dirname(__FILE__) + '/../lib')
 
 require 'fileutils'
 require 'tmpdir'
+require 'json'
 require 'video_transcoding/cli'
 
 module VideoTranscoding
@@ -286,6 +287,7 @@ HERE
       @handbrake_options          = {}
       @disable_handbrake_options  = []
       @temporary                  = nil
+      @use_job_queue              = false
     end
 
     def define_options(opts)
@@ -873,6 +875,20 @@ HERE
       prepare_subtitle(media, handbrake_options)
       prepare_srt(media, handbrake_options)
       prepare_options(handbrake_options, encoder_options)
+      return if @dry_run
+
+      if @use_job_queue
+        # If running a separate daemon, 
+        # add the command to the queue of jobs
+        # /var/spool/ripper/queue/*.json
+        File.open("/var/spool/ripper/queue/#{handbrake_options['output']}.json", 'w') do |f|
+          f.write(handbrake_options.to_json)
+        end
+        return
+      end
+
+      ### TODO From here until....
+      # Create the HandBrakeCLI command from the options
       transcode(handbrake_options)
       adjust_metadata(handbrake_options['output'])
 
@@ -884,6 +900,7 @@ HERE
         seconds = seconds % 60
         printf "Elapsed time: %02d:%02d:%02d\n\n", hours, minutes, seconds
       end
+      ### .... Here run this as a background daemon
     end
 
     def resolve_output(media)
@@ -1387,9 +1404,10 @@ HERE
       @disable_handbrake_options.each { |name| handbrake_options.delete name }
     end
 
-    def transcode(handbrake_options)
+    def prepare_command(handbrake_options)
       handbrake_command = [HandBrake.command_name]
 
+      Console.debug handbrake_options
       handbrake_options.each do |name, value|
         if value.nil?
           handbrake_command << "--#{name}"
@@ -1402,9 +1420,14 @@ HERE
 
       if @dry_run
         puts handbrake_command.join(' ')
-        return
       end
 
+      return handbrake_command
+    end
+
+    # Runs the transcode command.
+    def transcode(handbrake_options)
+      handbrake_command = prepare_command(handbrake_options)
       Console.debug handbrake_command.inspect
       log_file_path = handbrake_options['output'] + '.log'
       log_file = @log ? File.new(log_file_path, 'wb') : nil

@@ -190,7 +190,7 @@ module VideoTranscoding
     def self.get_title(title_to_scan, root)
       title = {}
       if title_to_scan.zero?
-        if (root['MainFeature']).zero?
+        if (root['MainFeature']) <= 0
           Console.debug 'HandBrake could not identify the MainFeature, using first title'
           title = root['TitleList'][0]
         else
