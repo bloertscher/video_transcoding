@@ -10,26 +10,54 @@ require 'logger'
 
 $logger = Logger.new($stdout)
 BASE_DIR = Pathname.new '/tmp/spool/ripper'
-FileUtils.mkdir_p(BASE_DIR / 'queue')
-FileUtils.mkdir_p(BASE_DIR / 'running')
-FileUtils.mkdir_p(BASE_DIR / 'done')
+WORK_DIRS = {
+  queue: BASE_DIR / 'queue',
+  running: BASE_DIR / 'running',
+  failed: BASE_DIR / 'failed',
+  succeeded: BASE_DIR / 'succeeded'
+}
 
-def run_job(abs_path)
-  start_time = Time.now
-  pathname = Pathname.new(abs_path)
-  puts pathname
+# Make sure the dirs exist
+WORK_DIRS.each_value do |dir|
+  FileUtils.mkdir_p dir
+end
+
+class TranscodeJobError < RuntimeError
+end
+
+def read_job_options(pathname)
+  # the options for running the transcode job, specified by the JSON file
   job_options = {}
   # Read the File contents
   pathname.open do |f|
     # JSON parse to hash
     text = f.read
-    $logger.debug "text: #{text}"
+    $logger.debug "JSON file text:\n#{text}"
     begin
       job_options = JSON.parse(text)
-    rescue JSON::JSONError => e
-      $logger.error e
+    rescue JSON::JSONError
+      $logger.error "Failed to parse JSON job file '#{pathname}'."
+      $logger.debug "Moving job file to '#{WORK_DIRS[:failed]}'"
+      FileUtils.mv pathname, WORK_DIRS[:failed]
+      raise
     end
   end
+end
+
+def move_to(src_file, dest_dir)
+  name = src_file.basename
+  dest_file = dest_dir / name
+  $logger.debug "Moving from '#{src_file}' to '#{dest_file}'"
+  FileUtils.mv src_file, dest_file
+  dest_file
+end
+
+def run_job(abs_path)
+  start_time = Time.now
+  pathname = Pathname.new(abs_path)
+  $logger.debug "Starting job '#{pathname}'"
+
+  job_options = read_job_options(pathname)
 
   # TODO: Verify job structure
   # Needs
@@ -41,24 +69,17 @@ def run_job(abs_path)
 
   # Check for errors
 
-  begin
-    # Move the file to the "/running" dir
-    job_file = pathname.basename
-    dest = BASE_DIR / 'running' / job_file
-    $logger.debug "Moving from '#{pathname}' to '#{dest}'"
-    FileUtils.mv pathname, dest
+  running = move_to(pathname, WORK_DIRS[:running])
 
+  begin
     transcode(job_options)
 
-    finished = BASE_DIR / 'done' / job_file
-    $logger.debug "Moving from '#{dest}' to '#{finished}'"
-    FileUtils.mv dest, finished
-  rescue => e
+    move_to(running, WORK_DIRS[:succeeded])
+  rescue StandardError
     # Move the job file to the failed dir
     $logger.error "Failed transcode of #{job_file}"
-    faildir = BASE_DIR / 'failed' / job_file
-    $logger.debug "Moving from '#{dest}' to '#{faildir}'"
-    raise e
+    move_to(running, WORK_DIRS[:failed])
+    raise
   end
 
   $logger.info "Completed: #{job_options['output']}"
@@ -70,29 +91,31 @@ def run_job(abs_path)
 end
 
 def transcode(job_options)
-  puts("Transcoding: #{job_options}")
+  $logger.info "Transcoding: #{job_options['input']}"
 
   adjust_metadata(job_options['output'])
 end
 
 def adjust_metadata(output_filepath)
-  puts("Adjusting metadata for #{output_filepath}")
+  $logger.info "Adjusting metadata for #{output_filepath}"
 end
 
-listener = Listen.to(BASE_DIR / 'queue', only: /\.json$/) do |modified, added, _removed|
+listener = Listen.to(WORK_DIRS[:queue], only: /\.json$/) do |modified, added, _removed|
   # For each new file, run a job on it
   added.each do |path|
     run_job(path)
+  rescue RuntimeError
   end
 
   modified.each do |path|
     run_job(path)
+  rescue RuntimeError
   end
-
-  # Ignore removed files
 end
 
-puts 'Starting watching for new job files'
+$logger.info "Starting watching for new job files in '#{WORK_DIRS[:queue]}'"
 listener.start
+
 sleep
-puts 'transcode job processor exiting'
+
+$logger.info 'Transcode job processor exiting'
