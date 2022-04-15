@@ -19,4 +19,5 @@ Gem::Specification.new do |s|
   s.executables           = ['convert-video', 'detect-crop', 'query-handbrake-log', 'transcode-video']
   s.extra_rdoc_files      = ['LICENSE', 'README.md']
   s.require_paths         = ['lib']
+  s.add_dependency        'listen', '~> 3.7'
 end
