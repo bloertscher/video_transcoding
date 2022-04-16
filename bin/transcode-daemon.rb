@@ -39,12 +39,12 @@ def read_job_options(pathname)
       $logger.error "Failed to parse JSON job file '#{pathname}'."
       $logger.debug "Moving job file to '#{WORK_DIRS[:failed]}'"
       FileUtils.mv pathname, WORK_DIRS[:failed]
-      raise
+      raise TranscodeJobError, "Failed to parse JSON job file '#{pathname}'."
     end
   end
 end
 
-def move_to(src_file, dest_dir)
+def move_job_file(src_file, dest_dir)
   name = src_file.basename
   dest_file = dest_dir / name
   $logger.debug "Moving from '#{src_file}' to '#{dest_file}'"
@@ -69,17 +69,16 @@ def run_job(abs_path)
 
   # Check for errors
 
-  running = move_to(pathname, WORK_DIRS[:running])
+  running = move_job_file(pathname, WORK_DIRS[:running])
 
   begin
     transcode(job_options)
 
-    move_to(running, WORK_DIRS[:succeeded])
-  rescue StandardError
+    move_job_file(running, WORK_DIRS[:succeeded])
+  rescue StandardError => e
     # Move the job file to the failed dir
-    $logger.error "Failed transcode of #{job_file}"
-    move_to(running, WORK_DIRS[:failed])
-    raise
+    move_job_file(running, WORK_DIRS[:failed])
+    raise TranscodeJobError, "Failed transcode of #{job_file}: " + e.message
   end
 
   $logger.info "Completed: #{job_options['output']}"
@@ -104,17 +103,23 @@ listener = Listen.to(WORK_DIRS[:queue], only: /\.json$/) do |modified, added, _r
   # For each new file, run a job on it
   added.each do |path|
     run_job(path)
-  rescue RuntimeError
+  rescue RuntimeError => e
+    $logger.error e.message
   end
 
   modified.each do |path|
     run_job(path)
-  rescue RuntimeError
+  rescue RuntimeError => e
+    $logger.error e.message
   end
 end
 
 $logger.info "Starting watching for new job files in '#{WORK_DIRS[:queue]}'"
 listener.start
+
+sleep 3
+# Since I'm too lazy to do it another way
+FileUtils.touch(Dir.glob("*.json", base: BASE_DIR))
 
 sleep
 
