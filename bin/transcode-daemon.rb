@@ -9,6 +9,8 @@ require 'pathname'
 require 'logger'
 
 $logger = Logger.new($stdout)
+$queue = Queue.new
+
 BASE_DIR = Pathname.new '/tmp/spool/ripper'
 WORK_DIRS = {
   queue: BASE_DIR / 'queue',
@@ -44,6 +46,14 @@ def read_job_options(pathname)
   end
 end
 
+def verify_options(job_options)
+  ["output", "input", "markers", "encoder", "title"].each do |key|
+    unless job_options.has_key?(key)
+      raise TranscodeJobError, "Required option '#{key}' not specified in JSON job"
+    end
+  end
+end
+
 def move_job_file(src_file, dest_dir)
   name = src_file.basename
   dest_file = dest_dir / name
@@ -55,38 +65,28 @@ end
 def run_job(abs_path)
   start_time = Time.now
   pathname = Pathname.new(abs_path)
-  $logger.debug "Starting job '#{pathname}'"
-
-  job_options = read_job_options(pathname)
-
-  # TODO: Verify job structure
-  # Needs
-  #   'output'
-  #   'input'
-  #   'markers'
-  #   'encoder'
-  #   'title'
-
-  # Check for errors
-
-  running = move_job_file(pathname, WORK_DIRS[:running])
+  current_file = pathname
+  $logger.info "Starting job '#{pathname}'"
 
   begin
+    job_options = read_job_options(pathname)
+    verify_options(job_options)
+    current_file = move_job_file(current_file, WORK_DIRS[:running])
     transcode(job_options)
 
-    move_job_file(running, WORK_DIRS[:succeeded])
-  rescue StandardError => e
-    # Move the job file to the failed dir
-    move_job_file(running, WORK_DIRS[:failed])
-    raise TranscodeJobError, "Failed transcode of #{job_file}: " + e.message
-  end
+  rescue RuntimeError => e
+    $logger.error "Failed transcode of #{pathname}: " + e.message
 
-  $logger.info "Completed: #{job_options['output']}"
-  seconds = (Time.now - start_time).round
-  hours   = seconds / (60 * 60)
-  minutes = (seconds / 60) % 60
-  seconds = seconds % 60
-  $logger.info format("Elapsed time: %02d:%02d:%02d\n\n", hours, minutes, seconds)
+    move_job_file(current_file, WORK_DIRS[:failed])
+  else
+    move_job_file(current_file, WORK_DIRS[:succeeded])
+    $logger.info "Completed job: #{job_options['output']}"
+    seconds = (Time.now - start_time).round
+    hours   = seconds / (60 * 60)
+    minutes = (seconds / 60) % 60
+    seconds = seconds % 60
+    $logger.info format("Elapsed time: %02d:%02d:%02d\n\n", hours, minutes, seconds)
+  end
 end
 
 def transcode(job_options)
@@ -99,28 +99,32 @@ def adjust_metadata(output_filepath)
   $logger.info "Adjusting metadata for #{output_filepath}"
 end
 
+# Add existing files to the queue, so they don't get ignored
+Dir.glob("*.json", base: WORK_DIRS[:queue]) { |job| $queue.push WORK_DIRS[:queue] / job }
+
 listener = Listen.to(WORK_DIRS[:queue], only: /\.json$/) do |modified, added, _removed|
   # For each new file, run a job on it
   added.each do |path|
-    run_job(path)
-  rescue RuntimeError => e
-    $logger.error e.message
+    $queue.push path
   end
 
   modified.each do |path|
-    run_job(path)
-  rescue RuntimeError => e
-    $logger.error e.message
+    $queue.push path
+  end
+end
+
+job_runner = Thread.new do
+  while job = $queue.pop
+    run_job(job)
   end
 end
 
 $logger.info "Starting watching for new job files in '#{WORK_DIRS[:queue]}'"
 listener.start
 
-sleep 3
-# Since I'm too lazy to do it another way
-FileUtils.touch(Dir.glob("*.json", base: BASE_DIR))
-
 sleep
 
 $logger.info 'Transcode job processor exiting'
+listener.stop
+$queue.close
+job_runner.join
