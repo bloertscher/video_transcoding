@@ -7,6 +7,7 @@ require 'fileutils'
 require 'json'
 require 'pathname'
 require 'logger'
+require 'video-transcoding/transcode-video'
 
 $logger = Logger.new($stdout)
 $queue = Queue.new
