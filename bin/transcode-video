@@ -893,9 +893,8 @@ HERE
       prepare_subtitle(media, handbrake_options)
       prepare_srt(media, handbrake_options)
       prepare_options(handbrake_options, encoder_options)
-      return if @dry_run
 
-      if @job_queue
+      if @job_queue && !@dry_run
         # If running a separate daemon,
         # add the command to the queue of jobs
         job_file = @job_queue / "#{handbrake_options['output']}.json"
