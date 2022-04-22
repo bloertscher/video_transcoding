@@ -2,6 +2,8 @@
 #
 # transcode-daemon
 
+$LOAD_PATH.unshift File.expand_path(File.dirname(__FILE__) + '/../lib')
+
 require 'listen'
 require 'fileutils'
 require 'json'
@@ -10,7 +12,8 @@ require 'logger'
 require 'video_transcoding/transcode'
 
 module VideoTranscoding
-  module TranscodeDaemon
+  # Contains a logger and a queue used for running the transcode daemon
+  class TranscodeDaemon
     class TranscodeJobError < RuntimeError
     end
 
@@ -39,15 +42,16 @@ module VideoTranscoding
           job_options = JSON.parse(text)
         rescue JSON::JSONError
           @logger.error "Failed to parse JSON job file '#{pathname}'."
-          @logger.debug "Moving job file to '#{WORK_DIRS[:failed]}'"
-          FileUtils.mv pathname, WORK_DIRS[:failed]
+          move_job_file(pathname, WORK_DIRS[:failed])
           raise TranscodeJobError, "Failed to parse JSON job file '#{pathname}'."
         end
       end
+
+      job_options
     end
 
     def verify_options(job_options)
-      ["output", "input", "markers", "encoder", "title"].each do |key|
+      ['output', 'input', 'markers', 'encoder', 'title'].each do |key|
         raise TranscodeJobError, "Required option '#{key}' not specified in JSON job" unless job_options.key?(key)
       end
     end
@@ -96,13 +100,13 @@ module VideoTranscoding
       @logger.info "Adjusting metadata for #{output_filepath}"
     end
 
-    def main()
+    def main
       # Make sure the dirs exist
       WORK_DIRS.each_value do |dir|
         FileUtils.mkdir_p dir
       end
       # Add existing files to the queue, so they don't get ignored
-      Dir.glob("*.json", base: WORK_DIRS[:queue]) { |job| @queue.push WORK_DIRS[:queue] / job }
+      Dir.glob('*.json', base: WORK_DIRS[:queue]) { |job| @queue.push WORK_DIRS[:queue] / job }
 
       listener = Listen.to(WORK_DIRS[:queue], only: /\.json$/) do |modified, added, _removed|
         # For each new file, run a job on it
@@ -116,7 +120,7 @@ module VideoTranscoding
       end
 
       job_runner = Thread.new do
-        while job = @queue.pop
+        while (job = @queue.pop)
           run_job(job)
         end
       end
@@ -134,4 +138,4 @@ module VideoTranscoding
   end
 end
 
-VideoTranscoding::TranscodeDaemon.main
+VideoTranscoding::TranscodeDaemon.new.main
