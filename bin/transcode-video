@@ -10,7 +10,9 @@ $LOAD_PATH.unshift File.expand_path(File.dirname(__FILE__) + '/../lib')
 require 'fileutils'
 require 'tmpdir'
 require 'json'
+require 'pathname'
 require 'video_transcoding/cli'
+require 'video_transcoding/transcode'
 
 module VideoTranscoding
   class Command
@@ -20,14 +22,14 @@ module VideoTranscoding
     MAX_HEIGHT  = 2304
 
     def about
-      <<HERE
+      <<-HERE
 transcode-video #{VERSION}
 #{COPYRIGHT}
 HERE
     end
 
     def usage
-      <<HERE
+      <<-HERE
 Transcode video file or disc image directory into format and size similar to
 popular online downloads. Works best with Blu-ray or DVD rip.
 
@@ -55,6 +57,10 @@ Output options:
                       (in NUMBER,NAME format, e.g. "1,Intro")
     --no-log        don't write log file
 -n, --dry-run       don't transcode, just show `HandBrakeCLI` command and exit
+    --job-queue DIRECTORY
+                    Instead of executing the transcode command,
+                    write the HandBrake options to a JSON file in the
+                    given directory, to be executed later
 
 Quality options:
     --encoder NAME  use named video encoder (default: x264)
@@ -287,7 +293,7 @@ HERE
       @handbrake_options          = {}
       @disable_handbrake_options  = []
       @temporary                  = nil
-      @use_job_queue              = false
+      @job_queue                  = nil
     end
 
     def define_options(opts)
@@ -799,7 +805,19 @@ HERE
           fail UsageError, "invalid HandBrakeCLI option: #{arg}"
         end
       end
+
+      opts.on '--job-queue ARG' do |arg|
+        @job_queue = Pathname.new arg
+      rescue ArgumentError
+        raise UsageError, "invalid job-queue directory name: #{arg.shellescape}"
+      else
+        unless @job_queue.directory? && @job_queue.writable?
+          raise UsageError, "job-queue must exist and be a writable directory: '#{arg}'"
+        end
+      end
+
     end
+
 
     def force_handbrake_option(name, value)
       @handbrake_options[name] = value
@@ -877,20 +895,18 @@ HERE
       prepare_options(handbrake_options, encoder_options)
       return if @dry_run
 
-      if @use_job_queue
-        # If running a separate daemon, 
+      if @job_queue
+        # If running a separate daemon,
         # add the command to the queue of jobs
-        # /var/spool/ripper/queue/*.json
-        File.open("/var/spool/ripper/queue/#{handbrake_options['output']}.json", 'w') do |f|
+        job_file = @job_queue / "#{handbrake_options['output']}.json"
+        File.open(job_file, 'w') do |f|
           f.write(handbrake_options.to_json)
         end
-        return
+        Console.info "Wrote HandBrake options to JSON file: #{job_file}"
+      else
+        # Run the HandBrakeCLI command
+        VideoTranscoding.transcode(handbrake_options, @dry_run, @log)
       end
-
-      ### TODO From here until....
-      # Create the HandBrakeCLI command from the options
-      transcode(handbrake_options)
-      adjust_metadata(handbrake_options['output'])
 
       unless @dry_run
         puts "Completed: #{handbrake_options['output']}"
@@ -900,7 +916,6 @@ HERE
         seconds = seconds % 60
         printf "Elapsed time: %02d:%02d:%02d\n\n", hours, minutes, seconds
       end
-      ### .... Here run this as a background daemon
     end
 
     def resolve_output(media)
@@ -1402,118 +1417,6 @@ HERE
 
       handbrake_options.merge! @handbrake_options
       @disable_handbrake_options.each { |name| handbrake_options.delete name }
-    end
-
-    def prepare_command(handbrake_options)
-      handbrake_command = [HandBrake.command_name]
-
-      Console.debug handbrake_options
-      handbrake_options.each do |name, value|
-        if value.nil?
-          handbrake_command << "--#{name}"
-        elsif @dry_run and name != 'encopts'
-          handbrake_command << "--#{name}=#{value.shellescape}"
-        else
-          handbrake_command << "--#{name}=#{value}"
-        end
-      end
-
-      if @dry_run
-        puts handbrake_command.join(' ')
-      end
-
-      return handbrake_command
-    end
-
-    # Runs the transcode command.
-    def transcode(handbrake_options)
-      handbrake_command = prepare_command(handbrake_options)
-      Console.debug handbrake_command.inspect
-      log_file_path = handbrake_options['output'] + '.log'
-      log_file = @log ? File.new(log_file_path, 'wb') : nil
-      Console.info 'Transcoding with HandBrakeCLI...'
-
-      begin
-        IO.popen(handbrake_command, 'rb', :err=>[:child, :out]) do |io|
-          Signal.trap 'INT' do
-            Process.kill 'INT', io.pid
-          end
-
-          buffer = ''
-
-          io.each_char do |char|
-            if (char.bytes[0] & 0x80) != 0
-              buffer << char
-            else
-              if not buffer.empty?
-                print buffer
-                buffer = ''
-              end
-
-              print char
-            end
-
-            log_file.print char unless log_file.nil?
-          end
-
-          if not buffer.empty?
-            print buffer
-          end
-        end
-      rescue SystemCallError => e
-        raise "transcoding failed: #{e}"
-      end
-
-      log_file.close unless log_file.nil?
-      fail "transcoding failed: #{handbrake_options['input']}" unless $CHILD_STATUS.exitstatus == 0
-
-      unless log_file.nil?
-        timestamp = File.mtime(log_file_path)
-        content = ''
-
-        begin
-          File.foreach(log_file_path) do |line|
-            content += line
-          end
-        rescue SystemCallError => e
-          raise "reading failed: #{e}"
-        end
-
-        log_file = File.new(log_file_path, 'wb')
-        log_file.print content.gsub(/^.*\r(.)/, '\1')
-        log_file.close
-        FileUtils.touch log_file_path, :mtime => timestamp
-      end
-    end
-
-    def adjust_metadata(output)
-      return if @dry_run
-      media = Media.new(path: output, allow_directory: false)
-      Console.debug media.info.inspect
-
-      if  media.info[:mkv] and
-          media.info[:subtitle].include? 1 and
-          media.info[:subtitle][1][:default] and
-          not media.info[:subtitle][1][:forced]
-        Console.info 'Forcing subtitle with mkvpropedit...'
-
-        begin
-          IO.popen([
-            MKVpropedit.command_name,
-            '--edit', 'track:s1',
-            '--set', 'flag-forced=1',
-            output,
-          ], 'rb', :err=>[:child, :out]) do |io|
-            io.each do |line|
-              Console.debug line
-            end
-          end
-        rescue SystemCallError => e
-          raise "forcing subtitle failed: #{e}"
-        end
-
-        fail "forcing subtitle: #{output}" if $CHILD_STATUS.exitstatus == 2
-      end
     end
 
     def terminate
