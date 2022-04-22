@@ -6,7 +6,10 @@ module VideoTranscoding
   # @param log_on [bool] Whether to log to a file or not
   def self.transcode(handbrake_options, dry_run, log_on)
     handbrake_command = prepare_command(handbrake_options, dry_run)
-    puts handbrake_command.join(' ') if dry_run
+    if dry_run
+      puts handbrake_command.join(' ')
+      return
+    end
 
     Console.debug handbrake_command.inspect
     log_file_path = handbrake_options['output'] + '.log'

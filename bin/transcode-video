@@ -894,14 +894,18 @@ HERE
       prepare_srt(media, handbrake_options)
       prepare_options(handbrake_options, encoder_options)
 
-      if @job_queue && !@dry_run
+      if @job_queue
         # If running a separate daemon,
         # add the command to the queue of jobs
-        job_file = @job_queue / "#{handbrake_options['output']}.json"
-        File.open(job_file, 'w') do |f|
-          f.write(handbrake_options.to_json)
+        if @dry_run
+          puts handbrake_options.to_json
+        else
+          job_file = @job_queue / "#{handbrake_options['output']}.json"
+          File.open(job_file, 'w') do |f|
+            f.write(handbrake_options.to_json)
+          end
+          Console.info "Wrote HandBrake options to JSON file: #{job_file}"
         end
-        Console.info "Wrote HandBrake options to JSON file: #{job_file}"
       else
         # Run the HandBrakeCLI command
         VideoTranscoding.transcode(handbrake_options, @dry_run, @log)
