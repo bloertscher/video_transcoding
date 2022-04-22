@@ -1,4 +1,4 @@
-#!/usr/bin/env ruby -W
+#!/usr/bin/env -S ruby -W
 #
 # transcode-video
 #
@@ -900,7 +900,7 @@ HERE
         if @dry_run
           puts handbrake_options.to_json
         else
-          job_file = @job_queue / "#{handbrake_options['output']}.json"
+          job_file = @job_queue / "#{Pathname.new(handbrake_options['output']).basename}.json"
           File.open(job_file, 'w') do |f|
             f.write(handbrake_options.to_json)
           end

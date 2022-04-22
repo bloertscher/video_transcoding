@@ -1,5 +1,3 @@
-#!/usr/bin/env ruby -W
-#
 # transcode-daemon
 
 $LOAD_PATH.unshift File.expand_path(File.dirname(__FILE__) + '/../lib')
