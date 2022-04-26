@@ -4,7 +4,7 @@ module VideoTranscoding
   # @param handbrake_options [Hash] CLI options for HandBrake
   # @param dry_run [bool] Whether to perform a dry run
   # @param log_on [bool] Whether to log to a file or not
-  def self.transcode(handbrake_options, dry_run, log_on)
+  def self.transcode(handbrake_options, dry_run: false, log_on: true)
     handbrake_command = prepare_command(handbrake_options, dry_run)
     if dry_run
       puts handbrake_command.join(' ')

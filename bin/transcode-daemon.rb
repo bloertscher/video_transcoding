@@ -7,6 +7,7 @@ require 'fileutils'
 require 'json'
 require 'pathname'
 require 'logger'
+require 'optparse'
 require 'video_transcoding/transcode'
 
 module VideoTranscoding
@@ -15,17 +16,19 @@ module VideoTranscoding
     class TranscodeJobError < RuntimeError
     end
 
-    BASE_DIR = Pathname.new '/tmp/spool/ripper'
-    WORK_DIRS = {
-      queue: BASE_DIR / 'queue',
-      running: BASE_DIR / 'running',
-      failed: BASE_DIR / 'failed',
-      succeeded: BASE_DIR / 'succeeded'
-    }.freeze
-
     def initialize
-      @logger = Logger.new($stdout)
+      update_work_dirs(Pathname.new('/tmp/spool/ripper'))
+      @logger = Logger.new($stdout, level: Logger::INFO)
       @queue = Queue.new
+    end
+
+    def update_work_dirs(base)
+      @work_dirs = {
+        queue: base / 'queue',
+        running: base / 'running',
+        failed: base / 'failed',
+        succeeded: base / 'succeeded'
+      }
     end
 
     def read_job_options(pathname)
@@ -40,7 +43,7 @@ module VideoTranscoding
           job_options = JSON.parse(text)
         rescue JSON::JSONError
           @logger.error "Failed to parse JSON job file '#{pathname}'."
-          move_job_file(pathname, WORK_DIRS[:failed])
+          move_job_file(pathname, @work_dirs[:failed])
           raise TranscodeJobError, "Failed to parse JSON job file '#{pathname}'."
         end
       end
@@ -66,19 +69,25 @@ module VideoTranscoding
       start_time = Time.now
       pathname = Pathname.new(abs_path)
       current_file = pathname
+
+      unless pathname.exist?
+        @logger.warn "Job file no longer exists: '#{pathname}' (Maybe it was already done?)"
+        return
+      end
+
       @logger.info "Starting job '#{pathname}'"
 
       begin
         job_options = read_job_options(pathname)
         verify_options(job_options)
-        current_file = move_job_file(current_file, WORK_DIRS[:running])
+        current_file = move_job_file(current_file, @work_dirs[:running])
         transcode(job_options)
       rescue RuntimeError => e
         @logger.error "Failed transcode of #{pathname}: " + e.message
 
-        move_job_file(current_file, WORK_DIRS[:failed])
+        move_job_file(current_file, @work_dirs[:failed])
       else
-        move_job_file(current_file, WORK_DIRS[:succeeded])
+        move_job_file(current_file, @work_dirs[:succeeded])
         @logger.info "Completed job: #{job_options['output']}"
         seconds = (Time.now - start_time).round
         hours   = seconds / (60 * 60)
@@ -90,23 +99,32 @@ module VideoTranscoding
 
     def transcode(job_options)
       @logger.info "Transcoding: #{job_options['input']}"
-
-      adjust_metadata(job_options['output'])
-    end
-
-    def adjust_metadata(output_filepath)
-      @logger.info "Adjusting metadata for #{output_filepath}"
+      VideoTranscoding.transcode(job_options)
+      @logger.info "Finished transcoding: #{job_options['input']}"
     end
 
     def main
+      OptionParser.new do |opts|
+        opts.on('-b', '--base DIRECTORY',
+                'Base directory for job directories (default /tmp/spool/ripper') do |base|
+          update_work_dirs(Pathname.new(base))
+        end
+        opts.on('-v', '--verbose', 'Output verbosity') do |v|
+          @logger.level = Logger::DEBUG if v
+        end
+      end.parse!
+
       # Make sure the dirs exist
-      WORK_DIRS.each_value do |dir|
+      @work_dirs.each_value do |dir|
         FileUtils.mkdir_p dir
       end
-      # Add existing files to the queue, so they don't get ignored
-      Dir.glob('*.json', base: WORK_DIRS[:queue]) { |job| @queue.push WORK_DIRS[:queue] / job }
 
-      listener = Listen.to(WORK_DIRS[:queue], only: /\.json$/) do |modified, added, _removed|
+      # Add existing files to the queue, so they don't get ignored
+      Dir.glob('*.json', base: @work_dirs[:queue]) { |job| @queue.push @work_dirs[:queue] / job }
+
+      # Create a file watcher for the queue directory.
+      # This will watch for new or modified *.json files in the queue
+      listener = Listen.to(@work_dirs[:queue], only: /\.json$/) do |modified, added, _removed|
         # For each new file, run a job on it
         added.each do |path|
           @queue.push path
@@ -123,7 +141,7 @@ module VideoTranscoding
         end
       end
 
-      @logger.info "Starting watching for new job files in '#{WORK_DIRS[:queue]}'"
+      @logger.info "Starting watching for new job files in '#{@work_dirs[:queue]}'"
       listener.start
 
       sleep
