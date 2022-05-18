@@ -13,6 +13,9 @@ require 'json'
 require 'pathname'
 require 'video_transcoding/cli'
 require 'video_transcoding/transcode'
+require 'video_transcoding/handbrake'
+require 'video_transcoding/ffmpeg'
+require 'video_transcoding/mkvpropedit'
 
 module VideoTranscoding
   class Command

@@ -16,7 +16,7 @@ Gem::Specification.new do |s|
   s.email                 = 'don@blivet.com'
   s.homepage              = 'https://github.com/donmelton/video_transcoding'
   s.files                 = Dir['{bin,lib}/**/*'] + Dir['[A-Z]*'] + ['video_transcoding.gemspec']
-  s.executables           = ['convert-video', 'detect-crop', 'query-handbrake-log', 'transcode-video', 'transcode-daemon.rb']
+  s.executables           = ['convert-video', 'detect-crop', 'query-handbrake-log', 'transcode-video', 'transcode-daemon']
   s.extra_rdoc_files      = ['LICENSE', 'README.md']
   s.require_paths         = ['lib']
   s.add_dependency        'listen', '~> 3.7'

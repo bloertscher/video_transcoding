@@ -18,8 +18,19 @@ module VideoTranscoding
     end
 
     def initialize
-      update_work_dirs(Pathname.new('/tmp/spool/ripper'))
-      @logger = Logger.new($stdout, level: Logger::INFO)
+      HandBrake.setup
+      FFmpeg.setup
+      MKVpropedit.setup
+
+      update_work_dirs(Pathname.new('/var/spool/transcode'))
+      $stdout.sync = true
+      @logger = Logger.new($stdout, 
+        level: Logger::INFO, 
+        formatter: proc {|_severity, datetime, _progname, msg|
+          timestamp = datetime.strftime('%H:%M:%S')
+          "#{timestamp}: #{msg}\n"
+        })
+          
       @queue = Queue.new
     end
 
@@ -104,10 +115,46 @@ module VideoTranscoding
       @logger.info "Finished transcoding: #{job_options['input']}"
     end
 
+    def setup_signals(signals)
+      # Use thread-local variable
+      Thread.main[:pending_signals] = []
+
+      signals.each { |signal|
+        Signal.trap signal do
+          # When a signal is received, add it to the queue of pending signals
+          Thread.main[:pending_signals] << signal
+        end
+      }
+    end
+
+    def handle_signals()
+      while signal = Thread.main[:pending_signals].shift
+	@logger.info "Signal #{signal} received"
+        case signal
+          when 'INT', 'TERM' then shutdown
+        end
+      end
+    end 
+
+    def shutdown()
+      @logger.info 'Transcode job processor exiting'
+      @listener.stop
+      @queue.close
+      @job_runner.join
+
+      # Move running files to failed, since the daemon is exiting
+      Dir.glob('*.json', base: @work_dirs[:running]) do |job| 
+        #FileUtils.mv @work_dirs[:running] / job, @work_dirs[:failed] / job 
+        move_job_file(@work_dirs[:running] / job, @work_dirs[:failed])
+      end
+
+      exit 0
+    end
+
     def main
       OptionParser.new do |opts|
         opts.on('-b', '--base DIRECTORY',
-                'Base directory for job directories (default /tmp/spool/ripper') do |base|
+                'Base directory for job directories (default /var/spool/transcode') do |base|
           update_work_dirs(Pathname.new(base))
         end
         opts.on('-v', '--verbose', 'Output verbosity') do |v|
@@ -125,7 +172,7 @@ module VideoTranscoding
 
       # Create a file watcher for the queue directory.
       # This will watch for new or modified *.json files in the queue
-      listener = Listen.to(@work_dirs[:queue], only: /\.json$/) do |modified, added, _removed|
+      @listener = Listen.to(@work_dirs[:queue], only: /\.json$/) do |modified, added, _removed|
         # For each new file, run a job on it
         added.each do |path|
           @queue.push path
@@ -136,21 +183,25 @@ module VideoTranscoding
         end
       end
 
-      job_runner = Thread.new do
+      @job_runner = Thread.new do
         while (job = @queue.pop)
           run_job(job)
         end
       end
+      #Listen.logger = @logger
+
+      # Create signal handlers
+      setup_signals(['INT', 'TERM'])
 
       @logger.info "Starting watching for new job files in '#{@work_dirs[:queue]}'"
-      listener.start
+      @listener.start
 
-      sleep
-
-      @logger.info 'Transcode job processor exiting'
-      listener.stop
-      @queue.close
-      job_runner.join
+      # Main thread goes to sleep with listener still active
+      while true 
+        sleep 1
+        # Process any signals received
+        handle_signals
+      end
     end
   end
 end
