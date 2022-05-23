@@ -111,6 +111,8 @@ module VideoTranscoding
 
     def transcode(job_options)
       @logger.info "Transcoding: #{job_options['input']}"
+      input_file = Pathname.new(job_options['input'])
+      FileUtils.mkdir_p input_file.dirname
       VideoTranscoding.transcode(job_options)
       @logger.info "Finished transcoding: #{job_options['input']}"
     end
